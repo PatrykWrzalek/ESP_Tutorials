@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "esp_common.h"
 #include "uart.h"
+#include "hw_timer.h"
 
 // put definition here:
 #define UART0 0
@@ -38,9 +39,30 @@ char *callback_str = "You send: ";
 uint8_t fifo_len = 0;
 uint8_t buf_idx = 0;
 uint8_t Rcv_data[256];
-uint8_t Rcv_data_len = 0;
+///////////////////////////////////////////////////////////////////////////////////////
+///*                                    WSKAZÓWKA:                                  *//
+// Dla zmiennych wykorzystywanych w przerwaniach stosować "volatile", przy braku     //
+// zastosowania "volatile", a gdy zmienna nie jest użyta w głównej pętli programu    //
+// kompilator może zoptymalizować program o zmienną (wyciąć ją).                     //
+///////////////////////////////////////////////////////////////////////////////////////
+volatile uint8_t Rcv_data_len = 0;
+volatile uint8_t timer_interrupt_count = 0;
 
-void uart_intr_handler(void *arg)
+void timer_intr_handler(void) // funkcja obsługująca przerwanie od timera
+{
+    timer_interrupt_count++;
+
+    if (timer_interrupt_count >= 6) // Jeśli upłynie 60 sekund
+    {
+        // Wykonaj działanie po 60 sekundach
+        timer_interrupt_count = 0;
+        uart0_tx_buffer("Mineła 1 min\r\n", strlen("Mineła 1 min\r\n"));
+    }
+
+    // hw_timer_arm(50, 0);
+}
+
+void uart_intr_handler(void *arg) // funkcja obsługująca przerwanie od UART0
 {
     // uint32_t uart_intr_status = READ_PERI_REG(UART_INT_ST(UART0));
 
@@ -57,7 +79,7 @@ void uart_intr_handler(void *arg)
         // uart_tx_one_char(UART0, data);                         // Prześlij odebrane dane z powrotem na UART (echo)
 
         Rcv_data[Rcv_data_len] = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze Rcv_data
-        Rcv_data_len++;
+        Rcv_data_len++;                                                  // Zwiększenie długości bufora (zajętości)
 
         fifo_cnt = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) & UART_RXFIFO_CNT; // Odczytaj ponownie w celu zaktualizowania wartości zmiennej
     }
@@ -174,6 +196,11 @@ void user_init(void) // there is a main() function
     UART_SetIntrEna(UART0, UART_RXFIFO_FULL_INT_ENA);    // Ustawienie przerwań dla pełnego bufora RX FIFO
     UART_intr_handler_register(uart_intr_handler, NULL); // Rejestracja obsługi przerwań UART
     ETS_UART_INTR_ENABLE();                              // Włączenie przerwań UART
+
+    // TIMER INIT:
+    hw_timer_init();
+    hw_timer_set_func(timer_intr_handler); // Rejestracja obsługi przerwań
+    hw_timer_arm(10000000, 1);             // Przerwanie co 10 sekundę (Timer FRC1 23bit max 26.84 sekundy)
 
     xTaskCreate(&print_data_from_RX, "Task4", 4096, NULL, 3, NULL); // Stworzenie zadania "print_data_from_RX (TX)" wykonywanego przez RTOS
 
@@ -318,7 +345,7 @@ bool uart_tx_one_char(uint8 uart, uint8 TxChar)
 {
     while (true)
     {
-        uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S); // Odczytanie ilości byte oczekujących w kolejce TX (zła metoda?)
+        uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S); // Odczytanie ilości byte oczekujących w kolejce TX
 
         if ((fifo_cnt >> UART_TXFIFO_CNT_S & UART_TXFIFO_CNT) < 126) // Sprawdzenie czy bufor nie jest zapełniony
         {
