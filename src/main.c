@@ -23,6 +23,7 @@
 #define UART_BIT_NUM_8 3 // 8 bit danych
 
 // put Task declarations here:
+void print_data_from_RX(void *ignore);
 void reciveing_uart(void *ignore);
 void print_string(void *ignore);
 void task_blink(void *ignore);
@@ -36,6 +37,8 @@ char *test_str = "Your String Here\r\n";
 char *callback_str = "You send: ";
 uint8_t fifo_len = 0;
 uint8_t buf_idx = 0;
+uint8_t Rcv_data[256];
+uint8_t Rcv_data_len = 0;
 
 void uart_intr_handler(void *arg)
 {
@@ -50,8 +53,11 @@ void uart_intr_handler(void *arg)
     while (fifo_cnt)
     // while (READ_PERI_REG(UART_STATUS(UART0)) & (UART_RXFIFO_CNT << UART_RXFIFO_CNT_S))
     {
-        uint8_t data = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze data
-        uart_tx_one_char(UART0, data);                         // Prześlij odebrane dane z powrotem na UART (echo)
+        // uint8_t data = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze data
+        // uart_tx_one_char(UART0, data);                         // Prześlij odebrane dane z powrotem na UART (echo)
+
+        Rcv_data[Rcv_data_len] = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze Rcv_data
+        Rcv_data_len++;
 
         fifo_cnt = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) & UART_RXFIFO_CNT; // Odczytaj ponownie w celu zaktualizowania wartości zmiennej
     }
@@ -169,7 +175,9 @@ void user_init(void) // there is a main() function
     UART_intr_handler_register(uart_intr_handler, NULL); // Rejestracja obsługi przerwań UART
     ETS_UART_INTR_ENABLE();                              // Włączenie przerwań UART
 
-    // xTaskCreate(&reciveing_uart, "Task3", 4096, NULL, 3, NULL); // Stworzenie zadania "reciveing_uart (TX)" wykonywanego przez RTOS
+    xTaskCreate(&print_data_from_RX, "Task4", 4096, NULL, 3, NULL); // Stworzenie zadania "print_data_from_RX (TX)" wykonywanego przez RTOS
+
+    // xTaskCreate(&reciveing_uart, "Task3", 4096, NULL, 3, NULL); // Stworzenie zadania "reciveing_uart (RX/TX)" wykonywanego przez RTOS
 
     xTaskCreate(&print_string, "Task2", 2048, NULL, 2, NULL); // Stworzenie zadania "print_string (TX)" wykonywanego przez RTOS
 
@@ -177,7 +185,39 @@ void user_init(void) // there is a main() function
 }
 
 // put function definitions here:
+/******************************************************************************
+ * FunctionName : print_data_from_RX
+ * Description  : print data reciving from line RX every 1s.
+ * Parameters   : none
+ * Returns      : none
+ *******************************************************************************/
+void print_data_from_RX(void *ignore)
+{
+    while (true)
+    {
+        // Wysłanie tekstu przez UART0
+        if (Rcv_data_len)
+        {
+            // os_printf("Data len: %d\n\r", Rcv_data_len); //for debug
 
+            uart0_tx_buffer(callback_str, strlen(callback_str));
+            for (uint8_t i = 0; i < Rcv_data_len; i++)
+            {
+                uart_tx_one_char(UART0, Rcv_data[i]);
+                Rcv_data[i] = '\0'; // Czyszczenie bufora za pomocą null-terminatora
+            }
+            uart0_tx_buffer("\r\n", strlen("\r\n"));
+
+            Rcv_data_len = 0; // Wyzerowanie jeżeli wszystkie dane odebrano
+        }
+
+        vTaskDelay(1000 / portTICK_RATE_MS); // Opóźnienie 5s
+
+        // uint16_t dat = uxTaskGetStackHighWaterMark(NULL);   // for debug
+        // os_printf("Task2 stack: %d\n\r", dat);
+    }
+    vTaskDelete(NULL); // Usunięcie zadania
+}
 /******************************************************************************
  * FunctionName : reciveing_uart
  * Description  : echo data reciving from line RX.
