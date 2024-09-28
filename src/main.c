@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
-#include "esp_common.h"
 #include "freertos/task.h"
+#include "esp_common.h"
+#include "uart.h"
 
 // put definition here:
 #define UART0 0
@@ -35,6 +36,56 @@ char *test_str = "Your String Here\r\n";
 char *callback_str = "You send: ";
 uint8_t fifo_len = 0;
 uint8_t buf_idx = 0;
+
+void uart_intr_handler(void *arg)
+{
+    // uint32_t uart_intr_status = READ_PERI_REG(UART_INT_ST(UART0));
+
+    // if (uart_intr_status & UART_RXFIFO_FULL_INT_ST) // Sprawdzenie, czy przerwanie zostało wywołane przez pełny bufor RX FIFO
+    // {
+    // os_printf("RX FIFO Full Interrupt!\n"); // for debug com. -> obsługa pełnego bufora RX
+
+    uint32 fifo_cnt = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) & UART_RXFIFO_CNT; // Odczytanie ilości byte oczekujących w kolejce RX
+
+    while (fifo_cnt)
+    // while (READ_PERI_REG(UART_STATUS(UART0)) & (UART_RXFIFO_CNT << UART_RXFIFO_CNT_S))
+    {
+        uint8_t data = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze data
+        uart_tx_one_char(UART0, data);                         // Prześlij odebrane dane z powrotem na UART (echo)
+
+        fifo_cnt = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) & UART_RXFIFO_CNT; // Odczytaj ponownie w celu zaktualizowania wartości zmiennej
+    }
+
+    WRITE_PERI_REG(UART_INT_CLR(UART0), UART_RXFIFO_FULL_INT_CLR); // Wyczyść flagę przerwania pełnego bufora RX FIFO
+    // }
+
+    /*
+    // DO THE SAME AS FUN reciveing_uart BUT WITHOUT FUN WHICH ARE DEDICATED TO TASK OF FREERTOS
+    uint8_t *data = (uint8_t *)malloc(1024);                                                      // dynamiczna alokacji pamięci dla zmiennej
+    uint32 fifo_cnt = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_RXFIFO_CNT_S) & UART_RXFIFO_CNT; // Odczytanie ilości bajtów oczekujących w kolejce RX
+
+    if (fifo_cnt) // Sprawdź, czy są dane do odczytu
+    {
+        for (uint8_t i = 0; i < fifo_cnt; i++)
+        {
+            data[i] = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF; // Odczytaj pojedynczy bajt z FIFO UART i przechowaj go w buforze data
+        }
+
+        data[fifo_cnt] = '\0'; // Zakończ łańcuch danych null-terminatorem (opcjonalne)
+
+        // Wysłanie danych przez UART
+        uart0_tx_buffer(callback_str, strlen(callback_str));
+        uart0_tx_buffer((char *)data, fifo_cnt);
+        uart0_tx_buffer("\r\n", strlen("\r\n"));
+
+        // uint16_t dat = uxTaskGetStackHighWaterMark(NULL);    // for debug
+        // os_printf("Task3 stack: %d\n\r", dat);
+    }
+
+    WRITE_PERI_REG(UART_INT_CLR(UART0), UART_RXFIFO_FULL_INT_CLR | UART_RXFIFO_TOUT_INT_CLR); // Wyczyszczenie flag przerwań RX FIFO
+    free(data);                                                                               // Zwalnianie pamięci
+    */
+}
 
 /******************************************************************************
  * FunctionName : user_rf_cal_sector_set
@@ -90,26 +141,35 @@ uint32 user_rf_cal_sector_set(void)
  *******************************************************************************/
 void user_init(void) // there is a main() function
 {
+    // GPIO INIT (chose GPIO function for UART Pin):
     PIN_PULLUP_DIS(PERIPHS_IO_MUX_U0TXD_U);              // Dezaktywacja restystora podciągającego
     PIN_FUNC_SELECT(PERIPHS_IO_MUX_U0TXD_U, FUNC_U0TXD); // Ustawienie GPIO1 jako linia TX dla UART0
     PIN_PULLUP_EN(PERIPHS_IO_MUX_U0RXD_U);               // Aktywacja restystora podciągającego
     PIN_FUNC_SELECT(PERIPHS_IO_MUX_U0RXD_U, FUNC_U0RXD); // Ustawienie GPIO3 jako linia RX dla UART0
     // PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, FUNC_UART0_CTS); // Aktywacja hardware flow control
 
+    // UART INIT:
     UART_SetBaudrate(UART0, BAUDRATE); // Ustawienie Baudrate'u
     // WRITE_PERI_REG(UART_CLKDIV(0), ((UART0_DIV & UART_CLKDIV_CNT) << UART_CLKDIV_S)); // Ustawienie Baudrate'u
     // UART_SetParity(UART0, UART_ODD_PARITY); // sprawdzania poprawności transmisji po przez kontrolę parzystości (EVEN || ODD)
+
     UART_SetStopBits(UART0, UART_STOP_1_2BIT); // 1 STOP BIT
     UART_SetWordLength(UART0, UART_BIT_NUM_8); // 8 BIT DATA
     // WRITE_PERI_REG(UART_CONF0(0), ((0x01 & UART_STOP_BIT_NUM) << UART_STOP_BIT_NUM_S) // 1 STOP BIT
     //   | ((0x03 & UART_BIT_NUM) << UART_BIT_NUM_S));   // 8 BIT DATA
+
     // UART_SetLineInverse(UART0, UART_RXD_INV);   // odwrócenie sygnału transmisji na lini RX
     // UART_SetPrintPort(UART0); // wybór UART'a wykorzystywanego do funkcji os_printf
     // SET_PERI_REG_MASK(UART_CONF0(UART0), UART_LOOPBACK); // aktywowanie funkcji Loopback (dane z TX są natychmiast przekazywane z powrotem do RX w ramach tego samego urządzenia)
     // CLEAR_PERI_REG_MASK(UART_CONF0(UART0), UART_LOOPBACK);// wyłączenie funkcji Loopback
     // UART_SetFlowCtrl(UART0, UART_HardwareFlowCtrl_RTS | UART_HardwareFlowCtrl_CTS, UART_RTS_LOW_LEVEL_THRESH); // ustawienie sprzętowego Flow Control na UART0
 
-    xTaskCreate(&reciveing_uart, "Task3", 4096, NULL, 3, NULL); // Stworzenie zadania "reciveing_uart (TX)" wykonywanego przez RTOS
+    // Interrupt INIT:
+    UART_SetIntrEna(UART0, UART_RXFIFO_FULL_INT_ENA);    // Ustawienie przerwań dla pełnego bufora RX FIFO
+    UART_intr_handler_register(uart_intr_handler, NULL); // Rejestracja obsługi przerwań UART
+    ETS_UART_INTR_ENABLE();                              // Włączenie przerwań UART
+
+    // xTaskCreate(&reciveing_uart, "Task3", 4096, NULL, 3, NULL); // Stworzenie zadania "reciveing_uart (TX)" wykonywanego przez RTOS
 
     xTaskCreate(&print_string, "Task2", 2048, NULL, 2, NULL); // Stworzenie zadania "print_string (TX)" wykonywanego przez RTOS
 
@@ -145,7 +205,7 @@ void reciveing_uart(void *ignore)
             // Wysłanie danych przez UART
             uart0_tx_buffer(callback_str, strlen(callback_str));
             uart0_tx_buffer((char *)data, fifo_len);
-            uart0_tx_buffer("/r/n", strlen("/r/n"));
+            uart0_tx_buffer("\r\n", strlen("\r\n"));
 
             // uint16_t dat = uxTaskGetStackHighWaterMark(NULL);    // for debug
             // os_printf("Task3 stack: %d\n\r", dat);
@@ -218,7 +278,7 @@ bool uart_tx_one_char(uint8 uart, uint8 TxChar)
 {
     while (true)
     {
-        uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S); // Odczytanie ilości byte oczekujących w kolejce TX
+        uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S); // Odczytanie ilości byte oczekujących w kolejce TX (zła metoda?)
 
         if ((fifo_cnt >> UART_TXFIFO_CNT_S & UART_TXFIFO_CNT) < 126) // Sprawdzenie czy bufor nie jest zapełniony
         {
